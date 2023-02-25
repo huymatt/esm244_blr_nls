@@ -1,0 +1,168 @@
+---
+title: 'Assignment 2 Task 2: Parameter Estimation with Purrr'
+author: "Matthieu Huy"
+date: "2023-02-11"
+output: html_document
+---
+
+```{r setup, echo = TRUE, warning = FALSE, message = FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(tidymodels)
+library(kableExtra)
+library(here)
+library(cowplot)
+library(GGally)
+library(ggtext)
+library(AICcmodavg)
+library(jtools)
+library(Metrics)
+```
+
+This analysis uses data containing observations of lizard species, sex, length, and weight in the Jornada Basin, located in the Chihuahaun desert of New Mexico.
+
+Citation:\
+- Lightfoot, D. and W.G. Whitford. 2020. Lizard pitfall trap data from 11 NPP study locations at the Jornada Basin LTER site, 1989-2006 ver 37. Environmental Data Initiative. https://doi.org/10.6073/pasta/4a6e258fb49c31e222ecbbcfd128967f (Accessed 2023-02-11).
+
+
+Metadata:\
+- https://portal.edirepository.org/nis/mapbrowse?packageid=knb-lter-jrn.210007001.37
+
+
+For this analysis, I will use non linear least squares to estimate parameters of a length to weight model for lizard populations in New Mexico. 
+
+### Read in and clean data 
+
+```{r}
+lizards_data <- read_csv(here("data/lizards.csv")) |>
+  janitor::clean_names() |>
+  rename(length = sv_length, species = spp)
+
+lizard_species_code <- read_table(here("data/Lizardcodelist.txt"), col_names = FALSE) |>
+  unite(scientific_name, X2, X3) |>
+  unite(common_name, X4, X5, X6) |>
+  select(code = X1, scientific_name, common_name) |>
+  tail(19)
+```
+
+### 1) Fit a length to weight model of the following form to all lizards in your data frame\
+
+$$
+{W}=a*(SVL)^b
+$$
+### log transform the equattion to get:
+
+$$
+log(W) = log(a) + b*log(SVL)
+$$
+
+- W: weight
+- SVL: snout-to-vent length
+- a and b are parameters that need to be fitted
+
+```{r}
+#log transform the data for initial guess model
+lizards_data <- lizards_data |>
+  mutate(log_length = log(length), 
+         log_weight = log(weight))
+
+my_guess_model <- lm(log_weight ~ log_length, data = lizards_data)
+coefs_tr <- exp(coefficients(my_guess_model)) #transformed coefficients
+
+
+```
+
+### NLS Model
+```{r}
+nls_model <- function(a, length, b){
+  out=a*(length)^b
+  }
+lizards_nls = nls(weight ~ nls_model(a, length, b),
+                 data = lizards_data,
+                 start = list(a = exp(-8.25), b = 2.48),
+                 trace = TRUE)
+
+broom::tidy(lizards_nls) %>% 
+  kable(caption = "Lizards NLS") %>% 
+  kable_classic()
+```
+
+```{r}
+# Make a prediction based on the model
+
+lizards_predict<- lizards_data %>% 
+  mutate(predict = predict(lizards_nls,newdata=.))
+
+labels <- as_labeller(c("M" = "Male", "F" = "Female"))
+
+ggplot(data = lizards_predict) +
+  geom_point(aes(x = length, 
+                 y = weight,
+                 color = sex)) +
+  geom_smooth(aes(x = length, y = predict),
+              color='red') +
+  facet_wrap(~sex,
+             labeller = labels) +
+  theme_light() +
+  theme(legend.position = "none") +
+  labs(x = "Length",
+       y = "Weight")
+#color code and theme and stuff
+
+```
+\
+```{r}
+#create subset of male Western Whiptail lizards
+lizards_subset <- lizards_data |>
+  filter(species %in% c("CNTI"),
+         sex %in% c("M"))
+
+subset_nls = nls(weight ~ nls_model(a, length, b),
+                 data = lizards_subset,
+                 start = list(a = exp(-8.25), b = 2.48),
+                 trace = TRUE)
+
+broom::tidy(subset_nls) %>% 
+  kable(caption = "Western Whiptail Species Specific NLS") %>% 
+  kable_classic()
+```
+\
+```{r}
+
+whiptail_predict<- lizards_subset %>% 
+  mutate(predict = predict(subset_nls, newdata=.))
+
+rmse_full_nls <- rmse(lizards_predict$weight, lizards_predict$predict)
+rmse_whip_nls <- rmse(whiptail_predict$weight, whiptail_predict$predict)
+
+ggplot() +
+  geom_point(data = whiptail_predict,
+             aes(x = length, 
+                 y = weight,
+                 color = sex),
+             color = "darkcyan",
+             alpha = 0.6) +
+  geom_smooth(data = whiptail_predict,
+              aes(x = length, y = predict),
+              color='red') +
+  geom_smooth(data = lizards_predict,
+              aes(x = length, y = predict),
+              color='darkcyan') +
+  labs(x = "Length",
+       y = "Weight",
+       caption = "**RMSE is
+       <span style ='color:red;'>1.563 using the full model</span> and
+       <span style ='color:darkcyan;'>3.349 using the whiptail subset model.</span>**<br>
+       Given that the model parameterized on the full dataset has a lower RMSE, it would be best to use this model to<br> predict weight given the snout-to-vent length of a whiptail lizard.") +
+  theme_light() +
+  theme(
+        plot.caption = element_markdown(size = 10, hjust = 0, 
+                                        lineheight = 1.2, margin = margin(10, 0, 0, -25)),
+        axis.text = element_text(color = "black", size = 10),                 
+        axis.title.x = element_text(color = "black", size = 12, face = "bold"),  
+        axis.title.y = element_text(color = "black", size = 12, face = "bold",
+                                    vjust = 2), 
+        legend.position = "none",
+        legend.text = element_text(size = 8))
+```
+
